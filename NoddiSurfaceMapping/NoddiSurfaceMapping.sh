@@ -1,5 +1,10 @@
 #! /bin/bash
 
+# Axon modules
+module load fsl #general fsl libraries
+module load workbench #hcp workbench
+module load brc-pipelines # NODDI modelling (CUDIMOT)
+
 set -e
 CMD=`echo $0 | sed -e 's/^\(.*\)\/\([^\/]*\)/\2/'`
 
@@ -17,7 +22,7 @@ UsageExit () {
  echo "    -a <num> : species atlas (0. Human [default], 1. Macaque, 2. Marmoset)"
  echo "    -t <num>,<num>,<num> : b-value upper and lower threshold, and b=0 upper threshold (default: 3100,100,50)"
  echo "    -M       : REGNAME=MSMAll (default: MSMSulc)"
- echo "    -s       : do not calculate NODDI but only perform surface mapping"
+ echo "    -s       : do not calculate NODDI (OR DTI) but only perform surface mapping"
  echo ""
  exit 1;
 
@@ -29,19 +34,11 @@ if [ "$2" = "" ] ; then UsageExit; fi
 #########################################################
 
 # HCP PIPELINE
-HCPPIPEDIR=/mnt/pub/devel/git/Pipelines
-EnvironmentScript=$HCPPIPEDIR/Examples/Scripts/SetUpHCPPipeline_RIKEN.sh
-
-# NODDI, requires  'AMICO', 'Camino' and 'matlab' or 'python and pythonspams'
-NODDIHCP="/mnt/pub/devel/HCP-RIKEN/NODDI"				# path to NoddiSurfaceMapping
-AMICODIR="/mnt/pub/devel/HCP-RIKEN/NODDI/AMICO-master"		# path to AMICO dir
-AMICODATADIR="/tmp"                  	# path to AMICO data dir
-AMICOPROTOCOL="PROTOCOL_$$"
+HCPPIPEDIR=/home/lpxfd2/Documents/hcp_pipelines/
+#Other Directories
+CARET7DIR="/usr/local/workbench/1.5.0/exe_rh_linux64" # path to wb_command
+NODDIHCP="/home/lpxfd2/Documents/NoddiSurfaceMapping/NoddiSurfaceMapping/"				# path to NoddiSurfaceMapping
 RunMode="0"  							# 0: Matlab, 1: Python
-
-# References:
-# NODDI: http://mig.cs.ucl.ac.uk/index.php?n=Tutorial.NODDImatlab
-# AMICO: https://github.com/daducci/AMICO
 
 REGNAME="MSMSulc"
 Species="0"
@@ -75,12 +72,10 @@ FreeSurferSubjectID=$Subject
 DWIT1wFolder=$StudyFolder/$Subject/$T1wFOLDER/$DWIT1wFOLDER
 DWINativeFolder=$StudyFolder/$Subject/$DWINativeFOLDER
 DtiRegDir=$DWINativeFolder/reg
-DWIT1wFolder=$StudyFolder/$Subject/$T1wFOLDER/$DWIT1wFOLDER
 T1wFolder=$StudyFolder/$Subject/$T1wFOLDER
 AtlasSpaceFolder=$StudyFolder/$Subject/$AtlasSpaceFOLDER
 AtlasSpaceNativeFolder=$AtlasSpaceFolder/$AtlasSpaceNativeFOLDER
 AtlasSpaceResultsDWIFolder=$AtlasSpaceFolder/Results/$AtlasSpaceResultsDWIFOLDER
-AtlasSpaceFolder=$StudyFolder/$Subject/$AtlasSpaceFOLDER
 
 # Surface mapping
 ribbonLlabel=3
@@ -110,7 +105,7 @@ case $Species in
  *) echo "Not yet supportted atlas species: $Species"; exit 1
 esac
 
-source $EnvironmentScript
+
 source $HCPPIPEDIR/global/scripts/log.shlib  # Logging related functions
 
 DiffRes="`fslval $DWIT1wFolder/data.nii.gz pixdim1 | awk '{printf "%0.2f",$1}'`"
@@ -189,78 +184,10 @@ NODDIFit () {
 
 log_Msg "Start: NODDIFit"
 
-protocol=$AMICOPROTOCOL
-subjdir=subject_$$
-
-if [ -e $AMICODATADIR/$protocol ] ; then
- rm -rf $AMICODATADIR/$protocol;
- if [ "$?" = "1" ] ; then echo "ERROR: canot remove $AMICODATADIR/$protocol. Exit."; exit 1; fi
- echo "Re-newing protocol directory: $AMICODATADIR/$protocol"
-fi
-mkdir $AMICODATADIR/$protocol
-mkdir -p $AMICODATADIR/$protocol/$subjdir
-fslchfiletype NIFTI $DWIT1wFolder/data.nii.gz $AMICODATADIR/$protocol/$subjdir/data.nii
-fslchfiletype NIFTI $DWIT1wFolder/nodif_brain_mask.nii.gz $AMICODATADIR/$protocol/$subjdir/nodif_brain_mask.nii
-
-${NODDIHCP}/scripts/fsl2scheme.sh $DWIT1wFolder/bvals $DWIT1wFolder/bvecs 1 $AMICODATADIR/$protocol/$subjdir/dwi.scheme -r
-
-if [ "$RunMode" = "0" ] ; then
-	command=$AMICODATADIR/$protocol/$subjdir/noddifit.m;
-	if [ -e $command ] ; then rm $command;fi
-
-cat <<EOF >> $command
-addpath('${AMICODIR}/matlab');
-AMICO_Setup;
-AMICO_PrecomputeRotationMatrices();
-AMICO_SetSubject('$protocol','$subjdir');
-CONFIG.dwiFilename    = fullfile( CONFIG.DATA_path, 'data.nii' );
-CONFIG.maskFilename   = fullfile( CONFIG.DATA_path, 'nodif_brain_mask.nii' );
-CONFIG.schemeFilename = fullfile( CONFIG.DATA_path, 'dwi.scheme' );
-AMICO_LoadData;
-AMICO_SetModel('NODDI');
-AMICO_GenerateKernels(true);
-AMICO_ResampleKernels();
-AMICO_Fit();
-EOF
-
-	matlab -nodesktop -nosplash -r "run $command;quit;"
-
-elif [ "$RunMode" = "1" ] ; then
-	command=$AMICODATADIR/$protocol/$subjdir/noddifit.py;
-	if [ -e $command ] ; then rm $command;fi
-
-cat <<EOF >> $command;
-import sys;
-sys.path.append('$AMICODIR/python');
-sys.path.append('$AMICODATADIR');
-import amico;
-import os
-os.chdir("$AMICODATADIR")
-amico.core.setup();
-ae = amico.Evaluation("$protocol","$subjdir");
-ae.load_data(dwi_filename = "$AMICODATADIR/$protocol/$subjdir/data.nii" , scheme_filename = "$AMICODATADIR/$protocol/$subjdir/dwi.scheme", mask_filename = "$AMICODATADIR/$protocol/$subjdir/nodif_brain_mask.nii" , b0_thr = 0);
-ae.set_model("NODDI");
-ae.generate_kernels();
-ae.load_kernels();
-ae.fit();
-ae.save_results();
-EOF
-
-	python $command
-
-else
-	echo "ERROR: cannot find which RunMode (matlab or python) should be used!"; exit 1;
-fi
-
-if [ `imtest $AMICODATADIR/$protocol/$subjdir/AMICO/NODDI/FIT_ICVF` != 1 ] ; then
- echo "ERROR: NODDI FIT_ICVF is not calculated. Exit"; exit 1;
-fi
-fslmaths $AMICODATADIR/$protocol/$subjdir/AMICO/NODDI/FIT_ICVF $DWIT1wFolder/noddi_ficvf
-fslmaths $AMICODATADIR/$protocol/$subjdir/AMICO/NODDI/FIT_ISOVF $DWIT1wFolder/noddi_fiso
-fslmaths $AMICODATADIR/$protocol/$subjdir/AMICO/NODDI/FIT_OD $DWIT1wFolder/noddi_odi
-fslmaths $AMICODATADIR/$protocol/$subjdir/AMICO/NODDI/FIT_dir $DWIT1wFolder/noddi_dir
-\rm -rf $AMICODATADIR/$protocol/$subjdir
-\rm -rf $AMICODATADIR/$protocol
+${CUDIMOT}/bin/Pipeline_NODDI_Watson.sh ${DWIT1wFolder}
+cp $DWIT1wFolder/data.noddi/NODDI_ICVF.nii.gz $DWIT1wFolder/noddi_ficvf.nii.gz
+cp $DWIT1wFolder/data.noddi/NODDI_ODI.nii.gz $DWIT1wFolder/noddi_odi.nii.gz
+cp $DWIT1wFolder/data.noddi/NODDI_ISOVF.nii.gz $DWIT1wFolder/noddi_fiso.nii.gz
 
 }
 
@@ -322,7 +249,7 @@ for vol in dti_FA dti_MD noddi_kappa noddi_ficvf data_snr; do
    #LowResMesh
    for LowResMesh in ${LowResMeshes[@]}; do
     DownsampleFolder=$AtlasSpaceFolder/fsaverage_LR${LowResMesh}k
-  ${CARET7DIR}/wb_command -metric-resample $AtlasSpaceResultsDWIFolder/RibbonVolumeToSurfaceMapping/"$Subject"."$Hemisphere".${vol}.native.func.gii "$AtlasSpaceNativeFolder"/"$Subject"."$Hemisphere".sphere.${RegName}.native.surf.gii "$DownsampleFolder"/"$Subject"."$Hemisphere".sphere."$LowResMesh"k_fs_LR.surf.gii ADAP_BARY_AREA $AtlasSpaceResultsDWIFolder/"$Subject"."$Hemisphere".${vol}${Reg}."$LowResMesh"k_fs_LR.func.gii -area-surfs "$AtlasSpaceNativeFolder"/"$Subject"."$Hemisphere".midthickness.native.surf.gii "$DownsampleFolder"/"$Subject"."$Hemisphere".midthickness."$LowResMesh"k_fs_LR.surf.gii -current-roi "$AtlasSpaceNativeFolder"/"$Subject"."$Hemisphere".roi.native.shape.gii
+  ${CARET7DIR}/wb_command -metric-resample $AtlasSpaceResultsDWIFolder/RibbonVolumeToSurfaceMapping/"$Subject"."$Hemisphere".${vol}.native.func.gii "$AtlasSpaceNativeFolder"/"$Subject"."$Hemisphere".sphere.${REGNAME}.native.surf.gii "$DownsampleFolder"/"$Subject"."$Hemisphere".sphere."$LowResMesh"k_fs_LR.surf.gii ADAP_BARY_AREA $AtlasSpaceResultsDWIFolder/"$Subject"."$Hemisphere".${vol}${Reg}."$LowResMesh"k_fs_LR.func.gii -area-surfs "$AtlasSpaceNativeFolder"/"$Subject"."$Hemisphere".midthickness.native.surf.gii "$DownsampleFolder"/"$Subject"."$Hemisphere".midthickness."$LowResMesh"k_fs_LR.surf.gii -current-roi "$AtlasSpaceNativeFolder"/"$Subject"."$Hemisphere".roi.native.shape.gii
   ${CARET7DIR}/wb_command -metric-mask $AtlasSpaceResultsDWIFolder/"$Subject"."$Hemisphere".${vol}${Reg}."$LowResMesh"k_fs_LR.func.gii "$DownsampleFolder"/"$Subject"."$Hemisphere".atlasroi."$LowResMesh"k_fs_LR.shape.gii $AtlasSpaceResultsDWIFolder/"$Subject"."$Hemisphere".${vol}${Reg}."$LowResMesh"k_fs_LR.func.gii
     ${CARET7DIR}/wb_command -metric-smoothing "$DownsampleFolder"/"$Subject"."$Hemisphere".midthickness."$LowResMesh"k_fs_LR.surf.gii $AtlasSpaceResultsDWIFolder/"$Subject"."$Hemisphere".${vol}${Reg}."$LowResMesh"k_fs_LR.func.gii "$SmoothingSigma" $AtlasSpaceResultsDWIFolder/"$Subject"."$Hemisphere".${vol}${Reg}_s"$SmoothingFWHM"."$LowResMesh"k_fs_LR.func.gii -roi "$DownsampleFolder"/"$Subject"."$Hemisphere".atlasroi."$LowResMesh"k_fs_LR.shape.gii
    done
@@ -391,8 +318,9 @@ for Subject in $Subjects ; do
  SetUp
  log_Msg "Start $CMD for subject: $Subject at `date -R`"
  log_Msg "SPECIES=$SPECIES"
+
  if [ "$CalcNODDI" != "NO" ] ; then
-   DTIFit
+   DTIFit  
    NODDIFit
  fi
  log_Msg "REGNAME=${REGNAME}"
