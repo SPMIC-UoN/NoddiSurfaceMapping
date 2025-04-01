@@ -42,7 +42,7 @@ RunMode="0"  							# 0: Matlab, 1: Python
 
 REGNAME="MSMSulc"
 Species="0"
-thr="3100,100,50" #b-value upper and lower threshold, b=0 upper threshold for HCP
+thr="1600,0,50" #b-value upper and lower threshold, b=0 upper threshold for HCP
 CalcNODDI="YES"
 while getopts Ma:t:s OPT
  do
